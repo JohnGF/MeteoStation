@@ -5,65 +5,102 @@ import adafruit_bmp280
 import busio
 import adafruit_lsm303_accel
 import adafruit_lis2mdl
-#from picamera import PiCamera
-import serial,os
+import serial
+import os
+import sys
 
-arduinoData = serial.Serial('/dev/ttyACM0',115200)
-i2c = board.I2C()
-accel = adafruit_lsm303_accel.LSM303_Accel(i2c)
-mag = adafruit_lis2mdl.LIS2MDL(i2c)
-sensor = adafruit_bmp280.Adafruit_BMP280_I2C(i2c)
-#camera = PiCamera()
+def initialize_sensors():
+    try:
+        arduinoData = serial.Serial('/dev/ttyACM0', 115200, timeout=1)
+    except Exception as e:
+        print(f"Failed to initialize serial: {e}")
+        arduinoData = None
 
-condition=True
-i=0
+    try:
+        i2c = board.I2C()
+        accel = adafruit_lsm303_accel.LSM303_Accel(i2c)
+        mag = adafruit_lis2mdl.LIS2MDL(i2c)
+        sensor = adafruit_bmp280.Adafruit_BMP280_I2C(i2c)
+    except Exception as e:
+        print(f"Failed to initialize I2C sensors: {e}")
+        return arduinoData, None, None, None, None
 
+    return arduinoData, i2c, accel, mag, sensor
 
-#camera.resolution = (1024, 768)
-#camera.start_preview()
-sleep(2)
+def read_sensor_data(sensor, accel, mag):
+    try:
+        temperature = sensor.temperature
+        pressure = sensor.pressure
+        acceleration = accel.acceleration
+        magnetic = mag.magnetic
+        return temperature, pressure, acceleration, magnetic
+    except Exception as e:
+        print(f"Error reading sensors: {e}")
+        return None, None, None, None
 
-#for filename in camera.capture_continuous('img{counter:03d}.jpg'):
-#    print('Captured %s' % filename)
-#    sleep(10) # wait 10 seconds
-#camera.stop_preview()    
-#while condition:
-#    print('Temperature: {} degrees C'.format(sensor.temperature)) 
-#    print('Pressure: {}hPa'.format(sensor.pressure))
-#    print("Acceleration (m/s^2): X=%0.3f Y=%0.3f Z=%0.3f"%accel.acceleration)
-#    print("Magnetometer (micro-Teslas)): X=%0.3f Y=%0.3f Z=%0.3f"%mag.magnetic)
-#    sleep(0.5)
-#    i=i+1
-#    if i==10:
-#        condition=False
+def format_sensor_data(temperature, pressure, acceleration, magnetic):
+    if None in (temperature, pressure, acceleration, magnetic):
+        return None
+    try:
+        return ",{},{},".format(temperature, pressure) + "%0.3f,%0.3f,%0.3f," % acceleration + "%0.3f,%0.3f,%0.3f" % magnetic
+    except Exception as e:
+        print(f"Error formatting sensor data: {e}")
+        return None
 
-first=0
-n=0
-m=45
-with open("DadosGeofisicos.txt",'w') as f, open("Satelites.txt","w") as fs:
-    while n<m: # while loop that loops forever
-        # while (arduinoData.inWaiting()==0): #Wait here until there is data
-        #     pass do nothing
-        #cc=str(arduinoData.readline())
-        #c=cc[2:][:-5]
-        c=",{},{},".format(sensor.temperature,sensor.pressure)+"%0.3f,%0.3f,%0.3f,"%accel.acceleration+"%0.3f,%0.3f,%0.3f"%mag.magnetic
-        if first==0:
-            first=1
-            f.write("Data,Temp_Celcius,Pressure_hPa,accelaration X (m/s^2),accelaration Y (m/s^2),accelaration Z (m/s^2),Magnetometer X (micro-Teslas),Magnetometer Y (micro-Teslas),Magnetometer Z (micro-Teslas)"+"\n")
-        else:
-            f.write(datetime.now().isoformat() + '\t' + c + '\n')
-            #f.write(c+'\n')
-        cc=str(arduinoData.readline())
-        fs.write(cc+"\n")
-        f.flush()
-        os.fsync(f.fileno())
-        
-        fs.flush()
-        os.fsync(fs.fileno())
+def read_telemetry(arduinoData):
+    if arduinoData is None:
+        return None
+    try:
+        if arduinoData.in_waiting > 0 or True: # Readline blocks anyway, timeout makes it safe
+            cc = arduinoData.readline()
+            if cc:
+                return str(cc)
+        return None
+    except Exception as e:
+        print(f"Error reading telemetry: {e}")
+        return None
 
-        n=n+1
-        print("Amostra %i de %i"%(n,m))
-        #print(f"im sleeping: n={n}")
-        #print(datetime.now().isoformat() + '\t' + c + '\n')
-        sleep(1)#30m
-arduinoData.close()
+def main_loop(arduinoData, sensor, accel, mag, max_samples=45):
+    first = 0
+    n = 0
+    
+    try:
+        with open("DadosGeofisicos.txt", 'w') as f, open("Satelites.txt", "w") as fs:
+            while n < max_samples:
+                temperature, pressure, acceleration, magnetic = read_sensor_data(sensor, accel, mag)
+                c = format_sensor_data(temperature, pressure, acceleration, magnetic)
+                
+                if first == 0:
+                    first = 1
+                    f.write("Data,Temp_Celcius,Pressure_hPa,accelaration X (m/s^2),accelaration Y (m/s^2),accelaration Z (m/s^2),Magnetometer X (micro-Teslas),Magnetometer Y (micro-Teslas),Magnetometer Z (micro-Teslas)\n")
+                else:
+                    if c:
+                        f.write(datetime.now().isoformat() + '\t' + c + '\n')
+                
+                cc = read_telemetry(arduinoData)
+                if cc:
+                    fs.write(cc + "\n")
+                
+                f.flush()
+                os.fsync(f.fileno())
+                
+                fs.flush()
+                os.fsync(fs.fileno())
+
+                n = n + 1
+                print("Amostra %i de %i" % (n, max_samples))
+                sleep(1)
+    except Exception as e:
+        print(f"Error in main loop: {e}")
+    finally:
+        if arduinoData:
+            arduinoData.close()
+
+if __name__ == "__main__":
+    arduinoData, i2c, accel, mag, sensor = initialize_sensors()
+    if sensor and accel and mag:
+        sleep(2)
+        main_loop(arduinoData, sensor, accel, mag)
+    else:
+        print("Sensors failed to initialize. Exiting.")
+        sys.exit(1)
